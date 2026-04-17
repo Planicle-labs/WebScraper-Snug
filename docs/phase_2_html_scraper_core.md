@@ -11,20 +11,16 @@ A vertical slice of the scraper that takes one HTML-based brand (like Uniqlo) an
 
 ### 1. `scrapers/html_scraper.py`
 Handles both Type A (HTML table) and Type B (JS-rendered) pages.
-- Launches a stealth headless browser using Playwright.
+- Launches a headless browser using Playwright stealth mode.
 - Implements user-agent selection for requests.
 - Navigates to the URL and detects page type (waits for JS rendering if needed).
 - Selects the target table or elements and extracts the raw rows.
 
-### 2. `parser.py` (Draft)
-A preliminary parser to take raw extracted text rows and map them onto the database schema fields.
-- Handles matching "Extra Small" to `XS`, or reading numbers from cells like `50 cm`.
 
 ## Site Type Detection Focus
 In this phase, we establish basic type detection logic:
 - A `<table>` means Type A.
 - A `<div class="size-chart">` populated after JS load means Type B.
-- *Types C & D are deferred to TBD phases later.*
 
 ## Acceptance Criteria
 - [ ] `main.py` successfully triggers the scraper for one HTML brand.
