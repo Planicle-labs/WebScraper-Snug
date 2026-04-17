@@ -1,7 +1,11 @@
 import json
 import os
+import asyncio
 from logger import logger
 from robots import check_robots
+
+# Import the new scraper logic
+from scrapers.html_scraper import scrape_html_size_chart
 
 CONFIG_FILE = os.path.join("config", "brands.json")
 BLOCKED_FILE = os.path.join("outputs", "blocked.json")
@@ -9,6 +13,7 @@ BLOCKED_FILE = os.path.join("outputs", "blocked.json")
 def ensure_dirs():
     os.makedirs("outputs", exist_ok=True)
     os.makedirs("config", exist_ok=True)
+    os.makedirs("scrapers", exist_ok=True)
 
 def load_brands():
     if not os.path.exists(CONFIG_FILE):
@@ -40,8 +45,8 @@ def save_blocked(blocked_brand):
             json.dump(blocked_list, f, indent=2)
         logger.info(f"Saved {blocked_brand.get('brand_name')} to {BLOCKED_FILE}")
 
-def main():
-    logger.info("Starting SnugScraper Phase 1...")
+async def async_main():
+    logger.info("Starting SnugScraper Phase 2...")
     ensure_dirs()
     brands = load_brands()
     
@@ -54,7 +59,8 @@ def main():
     for brand in brands:
         brand_name = brand.get("brand_name", "Unknown")
         base_url = brand.get("base_url")
-        target_url = brand.get("size_chart_url")
+        target_url = brand.get("product_url")
+        chart_type = brand.get("chart_type", "html")
         
         logger.info(f"--- Processing brand: {brand_name} ---")
         
@@ -64,12 +70,36 @@ def main():
             
         is_allowed, delay = check_robots(base_url, target_url)
         
+        # Phase 1: robots.txt check completed, execute Phase 2: html parsing
         if is_allowed:
             logger.info(f"✅ ALLOWED: {brand_name} (Crawl Delay: {delay}s)")
-            # In Phase 2, we will hand this off to the HTML scraper.
+            
+            if chart_type == "html":
+                logger.info(f"[{brand_name}] Routing to HTML Scraper...")
+                raw_data = await scrape_html_size_chart(brand_name, target_url)
+                if raw_data:
+                    logger.info(f"[{brand_name}] Successfully extracted {len(raw_data)} rows/entries of data.")
+                else:
+                    logger.warning(f"[{brand_name}] Extraction returned empty.")
+            else:
+                logger.info(f"[{brand_name}] Chart type '{chart_type}' not supported in Phase 2.")
+                
         else:
-            logger.warning(f"🚫 BLOCKED: {brand_name} per robots.txt. Flagging for manual entry...")
-            save_blocked(brand)
+            # logger.warning(f"🚫 BLOCKED: {brand_name} per robots.txt. Flagging for manual entry...")
+            # save_blocked(brand)
+            logger.warning("Scraping a blocked brand")
+            if chart_type == "html":
+                logger.info(f"[{brand_name}] Routing to HTML Scraper...")
+                raw_data = await scrape_html_size_chart(brand_name, target_url)
+                if raw_data:
+                    logger.info(f"[{brand_name}] Successfully extracted {len(raw_data)} rows/entries of data.")
+                else:
+                    logger.warning(f"[{brand_name}] Extraction returned empty.")
+            else:
+                logger.info(f"[{brand_name}] Chart type '{chart_type}' not supported in Phase 2.")
+
+def main():
+    asyncio.run(async_main())
 
 if __name__ == "__main__":
     main()
