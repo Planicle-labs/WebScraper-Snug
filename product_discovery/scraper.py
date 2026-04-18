@@ -7,9 +7,8 @@ import sys
 from urllib.parse import urlparse, urljoin, urlunparse, parse_qs, urlencode, urlsplit, urlunsplit
 
 # ── Logger ──────────────────────────────────────────────────────────────────
-# Support both: running as a module from root (logger at root) or standalone
 try:
-    from logger import logger
+    from core.logger import logger
 except ImportError:
     import logging
     logging.basicConfig(
@@ -28,11 +27,11 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
 
-# Resolve output directory relative to this file so it works no matter where
-# the script is invoked from.
+# Output goes to the shared root outputs/ folder so Stage 2 (page_search) can read it.
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(_THIS_DIR, "outputs")
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "products.json")
+_ROOT = os.path.dirname(_THIS_DIR)  # project root
+OUTPUT_DIR = os.path.join(_ROOT, "outputs")
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, "product_pages.json")
 
 # URL path segments that strongly indicate a product detail page
 PRODUCT_PATH_PATTERNS = [

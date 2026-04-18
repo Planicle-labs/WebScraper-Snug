@@ -141,20 +141,51 @@ Blocked brands → added to manual entry queue, not skipped entirely.
 
 ## 10. Deliverables
 
+The codebase is split into two pipeline stages with shared core utilities:
+
 ```
-scraper/
-  ├── main.py               # entry point, runs queue
-  ├── config/
-  │   └── brands.json       # per-brand config (URLs, chart type etc.)
-  ├── outputs/
-  │   └── blocked.json      # JSON log of brands blocked by robots.txt or firewalls
-  ├── scrapers/
-  │   ├── html_scraper.py   # Type A/B sites
-  │   ├── vision_scraper.py # Type C sites (GPT-4 Vision)
-  │   └── pdf_scraper.py    # Type D sites
-  ├── parser.py             # raw data → schema fields
-  ├── validator.py          # validation rules
-  ├── db.py                 # Neon DB write logic
-  ├── robots.py             # robots.txt checker
-  └── logger.py             # scrape_log writes
+WebScraper-Snug/
+│
+├── product_discovery/          # Stage 1: crawl category pages → collect product URLs
+│   ├── scraper.py              # category listing scraper (multi-page, pagination-aware)
+│   └── config.json             # category URLs to scrape per brand
+│
+├── page_search/                # Stage 2: visit product URLs → extract size charts
+│   ├── run.py                  # entry point for Stage 2
+│   ├── scrapers/
+│   │   ├── html_scraper.py     # Type A/B sites (HTML table / JS-rendered)
+│   │   ├── vision_scraper.py   # Type C sites (image-based) — TBD
+│   │   └── pdf_scraper.py      # Type D sites (PDF guides) — TBD
+│   └── config/
+│       └── brands.json         # per-brand config (base URL, chart type, region)
+│
+├── core/                       # Shared utilities used by both stages
+│   ├── logger.py               # consistent logging setup
+│   └── robots.py               # robots.txt checker (gate before any scraping)
+│
+├── outputs/                    # Shared output layer — THE HANDOFF between stages
+│   ├── product_pages.json      # ← written by Stage 1, read by Stage 2
+│   └── blocked.json            # brands blocked by robots.txt (flagged for manual entry)
+│
+├── docs/                       # PRD and phase implementation notes
+├── main.py                     # thin pipeline runner (chains Stage 1 → Stage 2)
+│
+│   # Planned (future phases):
+│   ├── parser.py               # raw data → schema fields
+│   ├── validator.py            # validation rules
+│   └── db.py                   # Neon DB write logic
+```
+
+**Pipeline flow:**
+```
+product_discovery/scraper.py
+        │  reads:   product_discovery/config.json
+        │  writes:  outputs/product_pages.json
+        ▼
+page_search/run.py
+        │  reads:   outputs/product_pages.json
+        │            page_search/config/brands.json
+        │  writes:  outputs/blocked.json
+        ▼
+    [parser → validator → db]  (future phases)
 ```

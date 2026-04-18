@@ -9,7 +9,7 @@ A vertical slice of the scraper that takes one HTML-based brand (like Uniqlo) an
 
 ## Deliverables
 
-### 1. `scrapers/html_scraper.py`
+### 1. `page_search/scrapers/html_scraper.py`
 Handles both Type A (HTML table) and Type B (JS-rendered) pages.
 - Launches a headless browser using Playwright stealth mode.
 - Implements user-agent selection for requests.
