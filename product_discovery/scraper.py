@@ -9,6 +9,7 @@ from urllib.parse import urlparse, urljoin, urlunparse, parse_qs, urlencode, url
 # ── Logger ──────────────────────────────────────────────────────────────────
 try:
     from core.logger import logger
+    from core.metrics import MetricsTracker
 except ImportError:
     import logging
     logging.basicConfig(
@@ -17,6 +18,7 @@ except ImportError:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     logger = logging.getLogger("ProductDiscovery")
+    MetricsTracker = None
 
 # ── Constants ────────────────────────────────────────────────────────────────
 USER_AGENTS = [
@@ -348,6 +350,10 @@ async def scrape_category(
         if use_stealth:
             await stealth.apply_stealth_async(page)
 
+        tracker = MetricsTracker(stage="ProductDiscovery", url=category_url) if MetricsTracker else None
+        if tracker:
+            tracker.attach_to_context(context)
+
         try:
             # ── Navigate to first page ──────────────────────────────────
             logger.info(f"[Page {page_num}] Navigating: {current_url}")
@@ -420,6 +426,8 @@ async def scrape_category(
         except Exception as e:
             logger.error(f"Error during scraping: {e}", exc_info=True)
         finally:
+            if tracker:
+                tracker.save()
             await browser.close()
 
     save_products(all_products)

@@ -2,6 +2,11 @@ import asyncio
 import random
 from core.logger import logger
 
+try:
+    from core.metrics import MetricsTracker
+except ImportError:
+    MetricsTracker = None
+
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -29,12 +34,17 @@ async def scrape_html_size_chart(brand_name, target_url):
         f"[{brand_name}] Starting async Playwright to scrape size chart at {target_url}"
     )
 
+    tracker = MetricsTracker(stage="PageSearch", url=target_url) if MetricsTracker else None
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         # Random user agent
         ua = random.choice(USER_AGENTS)
         context = await browser.new_context(user_agent=ua)
         page = await context.new_page()
+        
+        if tracker:
+            tracker.attach_to_context(context)
 
         # Apply stealth mode
         await stealth.apply_stealth_async(page)
@@ -123,4 +133,6 @@ async def scrape_html_size_chart(brand_name, target_url):
             logger.error(f"[{brand_name}] Error during page evaluation: {e}")
             return []
         finally:
+            if tracker:
+                tracker.save()
             await browser.close()
