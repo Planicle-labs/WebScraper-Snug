@@ -1,0 +1,4 @@
+streamlit
+psutil
+playwright
+playwright-stealth

@@ -1,0 +1,1 @@
+# UI package for Snug Web Scraper

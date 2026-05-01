@@ -84,3 +84,73 @@ class MetricsTracker:
                         f"{self.bandwidth_bytes / 1024:.2f} KB, {execution_time:.2f}s")
         except Exception as e:
             logger.error(f"[Metrics] Error saving to db: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Read helpers for the Streamlit dashboard
+# ---------------------------------------------------------------------------
+
+def get_latest_run_metrics() -> dict:
+    """
+    Return the most-recently saved row from the metrics table (any stage).
+    Useful for displaying the result of the last completed scraper run.
+
+    Returns a dict with keys: stage, url, domain, requests_count,
+    bandwidth_bytes, execution_time_sec, timestamp.
+    Returns an empty dict if the table is empty.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT stage, url, domain, requests_count, bandwidth_bytes, "
+            "execution_time_sec, timestamp "
+            "FROM metrics ORDER BY id DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {
+                "stage": row[0],
+                "url": row[1],
+                "domain": row[2],
+                "requests_count": row[3],
+                "bandwidth_bytes": row[4],
+                "execution_time_sec": row[5],
+                "timestamp": row[6],
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def get_run_metrics_since(since_timestamp: str) -> dict:
+    """
+    Aggregate all metrics rows inserted at or after *since_timestamp*
+    (ISO-8601 string, e.g. '2025-05-01 12:00:00').
+
+    Returns a dict:
+        requests_count  – total HTTP requests across all rows
+        bandwidth_bytes – total bytes (upload headers + download headers/body)
+        row_count       – number of rows aggregated
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COALESCE(SUM(requests_count),0), "
+            "COALESCE(SUM(bandwidth_bytes),0), COUNT(*) "
+            "FROM metrics WHERE timestamp >= ?",
+            (since_timestamp,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {
+                "requests_count": row[0],
+                "bandwidth_bytes": row[1],
+                "row_count": row[2],
+            }
+    except Exception:
+        pass
+    return {"requests_count": 0, "bandwidth_bytes": 0, "row_count": 0}
