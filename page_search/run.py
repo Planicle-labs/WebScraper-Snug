@@ -18,6 +18,7 @@ import asyncio
 from core.logger import logger
 from core.robots import check_robots
 from page_search.scrapers.html_scraper import scrape_html_size_chart
+from page_search.scrapers.image_scraper import scrape_image_size_chart
 
 # ── Paths (resolved from this file's location so they work from any cwd) ────
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,6 +101,34 @@ async def async_main():
                 logger.info(f"[{brand_name}] Successfully extracted {len(raw_data)} rows/entries of data.")
             else:
                 logger.warning(f"[{brand_name}] Extraction returned empty.")
+
+        elif chart_type == "image":
+            # Build the output folder: outputs/{brand_name_lower}_output_img/
+            folder_name = brand_name.lower().replace(" ", "_") + "_output_img"
+            output_dir = os.path.join(_ROOT, "outputs", folder_name)
+            logger.info(f"[{brand_name}] Routing to Image Scraper → saving to: {output_dir}")
+
+            image_results = await scrape_image_size_chart(brand_name, target_url, output_dir)
+
+            ok_count = sum(1 for r in image_results if r.get("status") == "ok")
+            logger.info(
+                f"[{brand_name}] Image scrape complete: {ok_count}/{len(image_results)} images downloaded."
+            )
+
+            # Save a JSON manifest of all results
+            manifest_path = os.path.join(_ROOT, "outputs", f"{brand_name.lower()}_results.json")
+            existing_manifest = []
+            if os.path.exists(manifest_path):
+                with open(manifest_path, "r", encoding="utf-8") as mf:
+                    try:
+                        existing_manifest = json.load(mf)
+                    except json.JSONDecodeError:
+                        existing_manifest = []
+            existing_manifest.extend(image_results)
+            with open(manifest_path, "w", encoding="utf-8") as mf:
+                json.dump(existing_manifest, mf, indent=2, ensure_ascii=False)
+            logger.info(f"[{brand_name}] Results manifest saved → {manifest_path}")
+
         else:
             logger.info(f"[{brand_name}] Chart type '{chart_type}' not yet supported.")
 
