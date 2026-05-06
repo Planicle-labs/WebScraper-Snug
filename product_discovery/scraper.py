@@ -106,7 +106,7 @@ def is_product_url(url: str) -> bool:
 
 # ── Core scraping helpers ────────────────────────────────────────────────────
 
-async def wait_for_products(page, timeout: int = 8000) -> bool:
+async def wait_for_products(page, timeout: int = 3000) -> bool:
     """Wait until at least one product-looking element appears."""
     selectors = [
         "[class*='product']",
@@ -124,7 +124,7 @@ async def wait_for_products(page, timeout: int = 8000) -> bool:
     return False
 
 
-async def scroll_to_load(page, pause: float = 1.5):
+async def scroll_to_load(page, pause: float = 0.2):
     """
     Scroll incrementally to trigger lazy-loaded products on infinite-scroll
     or lazy-render pages.
@@ -297,16 +297,15 @@ def build_next_page_url(current_url: str, page_num: int) -> str | None:
     return None
 
 
-# ── Main scrape orchestrator ─────────────────────────────────────────────────
-
 async def scrape_category(
     category_url: str,
     max_pages: int = 50,
-    delay_between_pages: float = 2.5,
+    delay_between_pages: float = 0.0,
+    stealth_enabled: bool = True,
 ) -> list[str]:
     """
-    Scrape all product listing pages for a given category URL.
-    Returns a list of unique absolute product URLs.
+    Scrape product URLs from category listing pages.
+    Returns unique product URLs found across all pagination pages.
     """
     try:
         from playwright.async_api import async_playwright
@@ -330,18 +329,13 @@ async def scrape_category(
 
     all_products: list[str] = []
     seen_products: set[str] = set()
-    page_num = 1
-    current_url = category_url
-    consecutive_empty = 0  # stop if we keep finding nothing new
-
     logger.info(f"Starting product discovery: {category_url}")
-    logger.info(f"Max pages: {max_pages} | Delay: {delay_between_pages}s | Base domain: {base_domain}")
+    logger.info(f"Max pages: {max_pages} | Base domain: {base_domain}")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        ua = random.choice(USER_AGENTS)
         context = await browser.new_context(
-            user_agent=ua,
+            user_agent=random.choice(USER_AGENTS),
             viewport={"width": 1440, "height": 900},
             locale="en-GB",
         )
@@ -355,19 +349,20 @@ async def scrape_category(
             tracker.attach_to_context(context)
 
         try:
-            # ── Navigate to first page ──────────────────────────────────
-            logger.info(f"[Page {page_num}] Navigating: {current_url}")
-            await page.goto(current_url, wait_until="domcontentloaded", timeout=45000)
-            await wait_for_products(page)
+            await page.goto(category_url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                await page.wait_for_selector("[class*='product'], [class*='item'], article, ul", timeout=3000)
+            except Exception:
+                pass
 
-            while page_num <= max_pages:
-                # Give dynamic content a moment to settle
-                await asyncio.sleep(delay_between_pages)
+            current_url = category_url
+            empty_count = 0
 
-                # Scroll to load lazy content
-                await scroll_to_load(page, pause=1.0)
+            for page_num in range(1, max_pages + 1):
+                await asyncio.sleep(0.05)
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(0.05)
 
-                # Harvest links
                 products = await collect_product_links(page, base_domain)
                 new_count = 0
                 for url in products:
@@ -376,62 +371,47 @@ async def scrape_category(
                         all_products.append(url)
                         new_count += 1
 
-                logger.info(f"[Page {page_num}] Found {new_count} new products (total: {len(all_products)})")
-
-                if new_count == 0:
-                    consecutive_empty += 1
-                    if consecutive_empty >= 2:
-                        logger.info("No new products found on 2 consecutive pages. Stopping.")
-                        break
+                if new_count > 0:
+                    empty_count = 0
                 else:
-                    consecutive_empty = 0
+                    empty_count += 1
 
-                if page_num >= max_pages:
-                    logger.info(f"Reached max_pages limit ({max_pages}). Stopping.")
+                logger.info(f"[Page {page_num}] +{new_count} products (total: {len(all_products)})")
+
+                if empty_count >= 3:
+                    logger.info("No more products found")
                     break
 
-                # ── Try pagination ──────────────────────────────────────
-                url_before = page.url
+                if page_num >= max_pages:
+                    break
 
-                # First: click-based pagination
                 clicked = await click_next_button(page)
-
                 if clicked:
                     try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                        await wait_for_products(page, timeout=8000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
                         current_url = page.url
-                        page_num += 1
-                        logger.info(f"[Page {page_num}] Navigated via Next button → {current_url}")
-                    except Exception as e:
-                        logger.warning(f"Navigation after Next click failed: {e}")
+                    except Exception:
                         break
                 else:
-                    # Fallback: URL-based page increment
                     next_url = build_next_page_url(current_url, page_num + 1)
                     if next_url and next_url != current_url:
-                        logger.info(f"[Page {page_num + 1}] Navigating via URL increment → {next_url}")
                         try:
-                            await page.goto(next_url, wait_until="domcontentloaded", timeout=30000)
-                            await wait_for_products(page, timeout=8000)
+                            await page.goto(next_url, wait_until="domcontentloaded", timeout=20000)
                             current_url = next_url
-                            page_num += 1
-                        except Exception as e:
-                            logger.warning(f"Failed to navigate to next URL: {e}")
+                        except Exception:
                             break
                     else:
-                        logger.info("No next button found and no URL pagination pattern detected. Stopping.")
                         break
 
         except Exception as e:
-            logger.error(f"Error during scraping: {e}", exc_info=True)
+            logger.error(f"Error during scraping: {e}")
         finally:
             if tracker:
                 tracker.save()
             await browser.close()
 
     save_products(all_products)
-    logger.info(f"Discovery complete. Total unique product URLs: {len(all_products)}")
+    logger.info(f"Discovery complete. Total product URLs: {len(all_products)}")
     return all_products
 
 
