@@ -95,6 +95,18 @@ def _record_net_baseline():
     st.session_state._net_recv_base = net.bytes_recv
 
 
+def _elapsed_seconds():
+    start = st.session_state.get("_run_start_ts")
+    if not start:
+        return 0.0
+    try:
+        from datetime import datetime, timezone
+        start_dt = datetime.strptime(start, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - start_dt).total_seconds()
+    except Exception:
+        return 0.0
+
+
 def _bw_delta_kb():
     if st.session_state._net_sent_base is None:
         return 0.0, 0.0
@@ -255,11 +267,19 @@ def display_metrics_card():
     ram  = psutil.virtual_memory().percent
     sent_kb, recv_kb = _bw_delta_kb()
     reqs = _db_requests()
+    elapsed = _elapsed_seconds()
 
     def fmt(kb: float) -> str:
         if kb >= 1024:
             return f"{kb/1024:.2f} MB"
         return f"{kb:.1f} KB"
+
+    def fmt_time(secs: float) -> str:
+        if secs >= 3600:
+            return f"{secs/3600:.1f}h"
+        elif secs >= 60:
+            return f"{secs/60:.1f}m"
+        return f"{secs:.1f}s"
 
     st.markdown("""
     <style>
@@ -271,18 +291,20 @@ def display_metrics_card():
     .mv { font-size:28px; font-weight:700; line-height:1.1; }
     .ms { color:#555; font-size:11px; margin-top:5px; }
     .cpu { color:#00FF7F; } .ram { color:#00BFFF; }
+    .time { color:#FF69B4; }
     .bwu { color:#FF8C00; } .bwd { color:#DA70D6; }
     .req { color:#FFD700; }
     </style>
     """, unsafe_allow_html=True)
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     cards = [
         (c1, "CPU Usage",      f"{cpu:.1f}%",     "cpu",  "System-wide"),
         (c2, "RAM Usage",      f"{ram:.1f}%",     "ram",  "System-wide"),
-        (c3, "Bandwidth ↑",    fmt(sent_kb),      "bwu",  "Uploaded this run"),
-        (c4, "Bandwidth ↓",    fmt(recv_kb),      "bwd",  "Downloaded this run"),
-        (c5, "HTTP Requests",  str(reqs),         "req",  "Via Playwright"),
+        (c3, "Time Taken",    fmt_time(elapsed), "time", "Elapsed this run"),
+        (c4, "Bandwidth ↑",    fmt(sent_kb),      "bwu",  "Uploaded this run"),
+        (c5, "Bandwidth ↓",    fmt(recv_kb),      "bwd",  "Downloaded this run"),
+        (c6, "HTTP Requests",  str(reqs),         "req",  "Via Playwright"),
     ]
     for col, label, val, cls, sub in cards:
         with col:
