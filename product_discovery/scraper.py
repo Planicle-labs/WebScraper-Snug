@@ -4,7 +4,7 @@ import os
 import random
 import re
 import sys
-from urllib.parse import urlparse, urljoin, urlunparse, parse_qs, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlparse, urljoin, urlunparse, parse_qs, urlencode
 
 # ── Logger ──────────────────────────────────────────────────────────────────
 try:
@@ -67,7 +67,7 @@ def save_products(products: list[str]):
     logger.info(f"Saved {len(products)} product URLs → {OUTPUT_FILE}")
 
 
-def normalise_url(href: str, base_domain: str) -> str | None:
+def normalise_url(href: str, current_page_url: str, allowed_host: str) -> str | None:
     """
     Turn href into an absolute, normalised URL.
     Returns None if it should be discarded.
@@ -75,11 +75,8 @@ def normalise_url(href: str, base_domain: str) -> str | None:
     if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
         return None
 
-    # Make absolute
-    if href.startswith("//"):
-        href = "https:" + href
-    elif href.startswith("/"):
-        href = base_domain + href
+    # Resolve protocol-relative, root-relative, and relative links.
+    href = urljoin(current_page_url, href)
 
     # Drop query string & fragment — we only want the canonical product URL
     try:
@@ -88,12 +85,28 @@ def normalise_url(href: str, base_domain: str) -> str | None:
         return None
 
     # Must be on the same host
-    base_host = urlparse(base_domain).netloc
-    if parsed.netloc and parsed.netloc != base_host:
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    if parsed.netloc != allowed_host:
         return None
 
     clean = urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
     return clean
+
+
+def is_within_listing_scope(url: str, listing_url: str) -> bool:
+    """
+    Keep pagination constrained to the original listing path on the same host.
+    Query-string pagination is allowed; unrelated path changes are not.
+    """
+    target = urlparse(url)
+    listing = urlparse(listing_url)
+    if target.netloc != listing.netloc:
+        return False
+
+    listing_path = listing.path.rstrip("/") or "/"
+    target_path = target.path.rstrip("/") or "/"
+    return target_path == listing_path or target_path.startswith(listing_path + "/")
 
 
 def is_product_url(url: str) -> bool:
@@ -139,7 +152,7 @@ async def scroll_to_load(page, pause: float = 1.5):
         prev_height = new_height
 
 
-async def collect_product_links(page, base_domain: str) -> list[str]:
+async def collect_product_links(page, allowed_host: str) -> list[str]:
     """
     Harvest all unique product URLs visible on the current page.
     Uses multiple selector strategies to be brand-agnostic.
@@ -153,7 +166,7 @@ async def collect_product_links(page, base_domain: str) -> list[str]:
     )
 
     for href in hrefs:
-        url = normalise_url(href, base_domain)
+        url = normalise_url(href, page.url, allowed_host)
         if url and is_product_url(url) and url not in seen:
             seen.add(url)
             found.append(url)
@@ -173,12 +186,12 @@ async def collect_product_links(page, base_domain: str) -> list[str]:
                 f"Array.from(document.querySelectorAll('{sel}')).map(a => a.getAttribute('href'))"
             )
             for href in hrefs2:
-                url = normalise_url(href, base_domain)
+                url = normalise_url(href, page.url, allowed_host)
                 if url and url not in seen:
-                    # For card links we accept any non-ignored URL since the
-                    # card context already implies it's a product
-                    path = urlparse(url).path
-                    if not IGNORE_PATH_RE.search(path):
+                    # Card context is not sufficient on its own because many
+                    # listings embed promos, sibling categories, or product
+                    # carousels. Keep the same product-URL filter here too.
+                    if is_product_url(url):
                         seen.add(url)
                         found.append(url)
         except Exception:
@@ -217,8 +230,8 @@ NEXT_BUTTON_SELECTORS = [
 ]
 
 
-async def click_next_button(page) -> bool:
-    """Try to click a Next-page button. Returns True if succeeded."""
+async def click_next_button(page, listing_url: str) -> bool:
+    """Try to click a listing paginator Next control. Returns True if succeeded."""
     for sel in NEXT_BUTTON_SELECTORS:
         try:
             btn = page.locator(sel).first
@@ -233,9 +246,32 @@ async def click_next_button(page) -> bool:
                     continue
                 if "disabled" in class_attr.lower():
                     continue
+
+                # Only trust controls that belong to obvious pagination UI or
+                # explicitly advertise a next-page relationship.
+                rel_attr = await btn.get_attribute("rel") or ""
+                aria_label = await btn.get_attribute("aria-label") or ""
+                in_pagination = await btn.evaluate(
+                    """el => Boolean(
+                        el.closest('nav, [role="navigation"], [class*="pagination"], [class*="pager"], [data-pagination]')
+                    )"""
+                )
+                if not in_pagination and rel_attr.lower() != "next" and "next" not in aria_label.lower():
+                    continue
+
+                url_before = page.url
                 await btn.scroll_into_view_if_needed()
                 await btn.click()
-                return True
+                try:
+                    await page.wait_for_url(lambda url: url != url_before, timeout=5000)
+                except Exception:
+                    continue
+
+                if is_within_listing_scope(page.url, listing_url):
+                    return True
+
+                logger.warning(f"Clicked Next control escaped listing scope: {page.url}")
+                await page.goto(url_before, wait_until="domcontentloaded", timeout=15000)
         except Exception:
             continue
     return False
@@ -326,7 +362,7 @@ async def scrape_category(
     ensure_dirs()
 
     parsed = urlparse(category_url)
-    base_domain = f"{parsed.scheme}://{parsed.netloc}"
+    allowed_host = parsed.netloc
 
     all_products: list[str] = []
     seen_products: set[str] = set()
@@ -335,7 +371,7 @@ async def scrape_category(
     consecutive_empty = 0  # stop if we keep finding nothing new
 
     logger.info(f"Starting product discovery: {category_url}")
-    logger.info(f"Max pages: {max_pages} | Delay: {delay_between_pages}s | Base domain: {base_domain}")
+    logger.info(f"Max pages: {max_pages} | Delay: {delay_between_pages}s | Allowed host: {allowed_host}")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -368,7 +404,7 @@ async def scrape_category(
                 await scroll_to_load(page, pause=1.0)
 
                 # Harvest links
-                products = await collect_product_links(page, base_domain)
+                products = await collect_product_links(page, allowed_host)
                 new_count = 0
                 for url in products:
                     if url not in seen_products:
@@ -391,10 +427,8 @@ async def scrape_category(
                     break
 
                 # ── Try pagination ──────────────────────────────────────
-                url_before = page.url
-
                 # First: click-based pagination
-                clicked = await click_next_button(page)
+                clicked = await click_next_button(page, category_url)
 
                 if clicked:
                     try:
@@ -409,7 +443,7 @@ async def scrape_category(
                 else:
                     # Fallback: URL-based page increment
                     next_url = build_next_page_url(current_url, page_num + 1)
-                    if next_url and next_url != current_url:
+                    if next_url and next_url != current_url and is_within_listing_scope(next_url, category_url):
                         logger.info(f"[Page {page_num + 1}] Navigating via URL increment → {next_url}")
                         try:
                             await page.goto(next_url, wait_until="domcontentloaded", timeout=30000)

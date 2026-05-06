@@ -6,6 +6,7 @@ import threading
 import uuid
 import psutil
 import streamlit as st
+from urllib.parse import urlparse
 from typing import Dict, Any
 
 try:
@@ -137,15 +138,42 @@ def _thread_product_discovery(task_id: str, url: str, max_pages: int):
 def _thread_page_search(task_id: str, urls: list):
     logs = _task_logs[task_id]
     try:
+        from core.utils import read_json_file, get_output_file_path
+        from page_search.run import load_brands, url_matches_brand
         from page_search.scrapers.html_scraper import scrape_html_size_chart
+        from page_search.scrapers.image_scraper import scrape_image_size_chart
+
+        brands = load_brands()
+        brand_by_host = {
+            urlparse(brand.get("base_url", "")).netloc: brand
+            for brand in brands
+            if brand.get("base_url")
+        }
         all_data = []
         logs.append(f"Starting Page Search on {len(urls)} URLs...")
         for i, url in enumerate(urls):
             logs.append(f"Processing {i+1}/{len(urls)}: {url[:55]}...")
             try:
-                result = asyncio.run(scrape_html_size_chart(f"Product {i+1}", url))
-                if result:
-                    all_data.append({"url": url, "data": result})
+                host = urlparse(url).netloc
+                brand = brand_by_host.get(host)
+
+                if not brand:
+                    brand = next((candidate for candidate in brands if url_matches_brand(url, candidate)), None)
+
+                brand_name = brand.get("brand_name", f"Product {i+1}") if brand else f"Product {i+1}"
+                chart_type = brand.get("chart_type", "html") if brand else "html"
+
+                if chart_type == "image":
+                    folder_name = brand_name.lower().replace(" ", "_") + "_output_img"
+                    output_dir = get_output_file_path(folder_name)
+                    result = asyncio.run(scrape_image_size_chart(brand_name, url, output_dir))
+                    all_data.append({"url": url, "data": result, "type": "image"})
+                    ok_count = sum(1 for item in result if item.get("status") == "ok")
+                    logs.append(f"  Saved {ok_count} CM image(s)")
+                else:
+                    result = asyncio.run(scrape_html_size_chart(brand_name, url))
+                    if result:
+                        all_data.append({"url": url, "data": result, "type": "html"})
             except Exception as e:
                 logs.append(f"  Failed: {e}")
 

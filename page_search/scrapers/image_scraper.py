@@ -1,273 +1,166 @@
-"""
-page_search/scrapers/image_scraper.py
---------------------------------------
-Image-based size chart scraper.
-
-Designed for brands (e.g. Overlaysnow) that display their size chart
-as one or more <img> elements inside a modal triggered by a "Size chart" button.
-
-Flow:
-  1. Navigate to product URL
-  2. Click the "Size chart" button  (selector: button.size_chart_text)
-  3. Wait for the modal to load
-  4. Scrape the src of every <img> inside the modal — including all tabs (Inches/CM)
-  5. Download each image and save to output_dir/{product_slug}_{label}.png
-
-Returns a list of dicts:
-  [{"url": ..., "image_path": ..., "label": ..., "status": "ok"|"failed"}, ...]
-"""
-
+﻿import json
 import asyncio
-import os
 import random
-import re
-import urllib.parse
+import os
 import httpx
+from playwright.async_api import async_playwright
+from playwright_stealth.stealth import Stealth
 
-from core.logger import logger
-
-try:
-    from core.metrics import MetricsTracker
-except ImportError:
-    MetricsTracker = None
-
-
-# ── Constants ─────────────────────────────────────────────────────────────────
-
+# List of user agents for rotation
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
-# Selector for the button that opens the size chart modal
-SIZE_CHART_BUTTON_SELECTORS = [
-    "button.size_chart_text",
-    "button:has-text('Size chart')",
-    "button:has-text('Size Chart')",
-    "a:has-text('Size chart')",
-    "a:has-text('Size Chart')",
-    "span:has-text('Size chart')",
-]
+# Default output directory for images
+DEFAULT_IMAGE_OUTPUT_DIR = os.path.join("outputs", "overlaysnow_output_img")
 
-# Tab buttons inside the modal (Inches / CM)
-TAB_BUTTON_SELECTOR = ".tab-btn"
-
-# Close button inside the modal
-CLOSE_BUTTON_SELECTOR = ".close-btn"
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def slug_from_url(url: str) -> str:
-    """Extract the last path segment to use as filename slug."""
-    path = urllib.parse.urlparse(url).path.rstrip("/")
-    return path.split("/")[-1] or "product"
-
-
-def sanitize_label(text: str) -> str:
-    """Turn a tab label like 'Inches' → 'inches' safe for filenames."""
-    return re.sub(r"[^a-z0-9]", "_", text.strip().lower())
-
-
-async def download_image(src: str, dest_path: str) -> bool:
-    """Download a single image from src URL and save to dest_path."""
+async def download_image(client, url, filename, output_dir):
+    """Downloads an image from a URL and saves it to the specified directory."""
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
-            response = await client.get(src)
-            response.raise_for_status()
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            with open(dest_path, "wb") as f:
+        os.makedirs(output_dir, exist_ok=True)
+        response = await client.get(url, timeout=30.0)
+        if response.status_code == 200:
+            file_path = os.path.join(output_dir, filename)
+            with open(file_path, "wb") as f:
                 f.write(response.content)
-        logger.info(f"  [OK] Saved: {dest_path}")
-        return True
+            return file_path
     except Exception as e:
-        logger.error(f"  [FAIL] Failed to download {src}: {e}")
-        return False
+        print(f"Error downloading image {url}: {e}")
+    return None
 
-
-# ── Core scrape function ──────────────────────────────────────────────────────
-
-async def scrape_image_size_chart(
-    brand_name: str,
-    target_url: str,
-    output_dir: str,
-) -> list[dict]:
-    """
-    Navigate to target_url, click the size chart button, extract all chart
-    images (across tabs), download them, and return a results list.
-
-    Args:
-        brand_name:  Human-readable brand name for logging.
-        target_url:  Product page URL.
-        output_dir:  Folder to save downloaded images into.
-
-    Returns:
-        List of dicts with keys: url, image_path, label, status.
-    """
+async def _scrape_single_url(page, url, client, output_dir):
+    """Internal helper to scrape a single product URL and capture the CM image."""
+    results = []
     try:
-        from playwright.async_api import async_playwright
-        from playwright_stealth.stealth import Stealth
-        stealth = Stealth()
-    except ImportError:
-        logger.error(
-            "playwright or playwright-stealth is not installed. "
-            "Run: pip install playwright playwright-stealth && playwright install chromium"
-        )
-        return []
+        print(f"Navigating to: {url}")
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-    results: list[dict] = []
-    product_slug = slug_from_url(target_url)
-    os.makedirs(output_dir, exist_ok=True)
+        # 1. Close the initial discount/newsletter popup
+        try:
+            popup_close = page.locator(".popup_close_btn")
+            if await popup_close.is_visible(timeout=5000):
+                await popup_close.dispatch_event("click")
+        except Exception:
+            pass
 
-    logger.info(f"[{brand_name}] -- Scraping size chart images for: {target_url}")
+        # 2. Click the 'Size chart' button
+        try:
+            size_chart_btn = page.get_by_role("button", name="Size chart")
+            if await size_chart_btn.count() > 0:
+                await size_chart_btn.wait_for(state="visible", timeout=10000)
+                await size_chart_btn.click(force=True)
+                await asyncio.sleep(2)
+            else:
+                return [{"url": url, "status": "error", "message": "Size chart button not found"}]
+        except Exception as e:
+            return [{"url": url, "status": "error", "message": str(e)}]
 
-    tracker = MetricsTracker(stage="PageSearch", url=target_url) if MetricsTracker else None
+        # 3. Capture the WebP image after clicking the 'CM' button
+        try:
+            async with page.expect_response(
+                    lambda response: "image/webp" in response.headers.get("content-type", "")
+                                     and response.status == 200,
+                    timeout=15000
+            ) as response_info:
+                # The interaction that triggers the network request
+                await page.get_by_role("button", name="CM").dispatch_event("click")
+
+            final_response = await response_info.value
+            image_url = final_response.url
+            
+            # Generate a filename from the URL slug
+            product_slug = url.split("/")[-1].split("?")[0]
+            filename = f"{product_slug}_cm.webp"
+            
+            # Download the image
+            local_path = await download_image(client, image_url, filename, output_dir)
+            
+            if local_path:
+                results.append({
+                    "url": url,
+                    "image_path": os.path.abspath(local_path),
+                    "label": "CM",
+                    "status": "ok"
+                })
+            else:
+                results.append({
+                    "url": url,
+                    "status": "error",
+                    "message": "Failed to download image"
+                })
+
+        except Exception as e:
+            results.append({
+                "url": url,
+                "status": "error",
+                "message": "No new WebP request detected after clicking 'CM'"
+            })
+
+    except Exception as e:
+        results.append({"url": url, "status": "error", "message": str(e)})
+    
+    return results
+
+async def scrape_image_size_chart(brand_name, url, output_dir=None):
+    """
+    Entry point for the Streamlit UI.
+    Scrapes a single URL and returns the result.
+    """
+    if not output_dir:
+        output_dir = DEFAULT_IMAGE_OUTPUT_DIR
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
+        stealth = Stealth()
         ua = random.choice(USER_AGENTS)
-        context = await browser.new_context(
-            user_agent=ua,
-            viewport={"width": 1440, "height": 900},
-        )
+        context = await browser.new_context(user_agent=ua)
         page = await context.new_page()
-
-        if tracker:
-            tracker.attach_to_context(context)
-
         await stealth.apply_stealth_async(page)
+        
+        async with httpx.AsyncClient() as client:
+            results = await _scrape_single_url(page, url, client, output_dir)
+            
+        await browser.close()
+        return results
 
-        try:
-            # ── 1. Navigate ───────────────────────────────────────────────
-            logger.info(f"[{brand_name}] Navigating to {target_url}")
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(2)
+async def run_scraper():
+    """Batch entry point to run against product_pages.json."""
+    json_path = os.path.join("outputs", "product_pages.json")
+    if not os.path.exists(json_path):
+        print(f"Error: {json_path} not found.")
+        return
 
-            # ── 2. Dismiss any interstitial popups ────────────────────────
-            # The site sometimes shows an app install banner or overlay — try
-            # pressing Escape which closes most overlay patterns.
-            try:
-                await page.keyboard.press("Escape")
-                await asyncio.sleep(0.5)
-            except Exception:
-                pass
+    try:
+        with open(json_path, "r") as f:
+            urls = json.load(f)
+    except Exception as e:
+        print(f"Error reading {json_path}: {e}")
+        return
 
-            # ── 3. Click the Size Chart button ────────────────────────────
-            button_clicked = False
-            for selector in SIZE_CHART_BUTTON_SELECTORS:
-                try:
-                    btn = page.locator(selector).first
-                    await btn.wait_for(state="visible", timeout=4000)
-                    await btn.scroll_into_view_if_needed()
-                    await btn.click()
-                    logger.info(f"[{brand_name}] Clicked size chart button via: {selector}")
-                    button_clicked = True
-                    break
-                except Exception:
-                    continue
+    if not urls:
+        print("No URLs found.")
+        return
 
-            if not button_clicked:
-                logger.warning(
-                    f"[{brand_name}] Could not find any Size Chart button on {target_url}. Skipping."
-                )
-                results.append({"url": target_url, "image_path": None, "label": None, "status": "no_button"})
-                return results
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        stealth = Stealth()
+        
+        async with httpx.AsyncClient() as client:
+            for index, url in enumerate(urls):
+                print(f"\n[{index+1}/{len(urls)}] Processing...")
+                context = await browser.new_context(user_agent=random.choice(USER_AGENTS))
+                page = await context.new_page()
+                await stealth.apply_stealth_async(page)
+                
+                res = await _scrape_single_url(page, url, client, DEFAULT_IMAGE_OUTPUT_DIR)
+                print(f"Result: {res}")
+                
+                await context.close()
+                await asyncio.sleep(random.uniform(2, 5))
 
-            # ── 4. Wait for modal to render ───────────────────────────────
-            try:
-                await page.wait_for_selector(CLOSE_BUTTON_SELECTOR, state="visible", timeout=8000)
-            except Exception:
-                logger.warning(f"[{brand_name}] Modal close-btn not found — modal may not have opened.")
+        await browser.close()
 
-            await asyncio.sleep(1.5)  # allow images to fully load
-
-            # ── 5. Collect all image srcs while modal is open ─────────────
-            # Strategy: click each tab (if present) while the modal is still
-            # open, accumulating unique image srcs. Download everything after.
-            collected: dict[str, str] = {}  # src → label
-
-            tab_buttons = await page.query_selector_all(TAB_BUTTON_SELECTOR)
-
-            if tab_buttons:
-                logger.info(f"[{brand_name}] Found {len(tab_buttons)} tab(s) in modal — iterating...")
-                for tab in tab_buttons:
-                    tab_label_raw = await tab.inner_text()
-                    tab_label = sanitize_label(tab_label_raw)
-
-                    try:
-                        await tab.click(timeout=5000)
-                        await asyncio.sleep(1.0)
-                    except Exception as e:
-                        logger.warning(f"[{brand_name}] Could not click tab '{tab_label_raw}': {e}")
-
-                    # Collect visible images after tab switch
-                    img_srcs: list[str] = await page.evaluate("""
-                        () => {
-                            const imgs = document.querySelectorAll('img');
-                            const srcs = [];
-                            for (const img of imgs) {
-                                const src = img.src || img.getAttribute('data-src') || '';
-                                if (src && src.includes('cdn.shopify.com') && src.length > 50) {
-                                    if (!srcs.includes(src)) srcs.push(src);
-                                }
-                            }
-                            return srcs;
-                        }
-                    """)
-                    logger.info(f"[{brand_name}] Tab '{tab_label_raw}': {len(img_srcs)} image(s) found")
-                    for src in img_srcs:
-                        if src not in collected:
-                            collected[src] = tab_label
-
-            else:
-                # No tabs — collect all CDN images currently visible in the modal
-                logger.info(f"[{brand_name}] No tabs — scraping modal images directly.")
-                img_srcs: list[str] = await page.evaluate("""
-                    () => {
-                        const imgs = document.querySelectorAll('img');
-                        const srcs = [];
-                        for (const img of imgs) {
-                            const src = img.src || img.getAttribute('data-src') || '';
-                            if (src && src.includes('cdn.shopify.com') && src.length > 50) {
-                                if (!srcs.includes(src)) srcs.push(src);
-                            }
-                        }
-                        return srcs;
-                    }
-                """)
-                logger.info(f"[{brand_name}] Found {len(img_srcs)} image(s).")
-                for idx, src in enumerate(img_srcs):
-                    collected[src] = f"chart_{idx}"
-
-            # ── 6. Download all collected images ──────────────────────────
-            logger.info(f"[{brand_name}] Downloading {len(collected)} unique image(s)...")
-            label_counts: dict[str, int] = {}
-            for src, label in collected.items():
-                count = label_counts.get(label, 0)
-                suffix = f"_{count}" if count > 0 else ""
-                label_counts[label] = count + 1
-                filename = f"{product_slug}_{label}{suffix}.png"
-                dest = os.path.join(output_dir, filename)
-                ok = await download_image(src, dest)
-                results.append({
-                    "url": target_url,
-                    "image_path": dest if ok else None,
-                    "label": f"{label}{suffix}",
-                    "status": "ok" if ok else "download_failed",
-                })
-
-            if not results:
-                logger.warning(f"[{brand_name}] No images were extracted from {target_url}")
-                results.append({"url": target_url, "image_path": None, "label": None, "status": "no_images"})
-
-
-        except Exception as e:
-            logger.error(f"[{brand_name}] Unexpected error on {target_url}: {e}", exc_info=True)
-            results.append({"url": target_url, "image_path": None, "label": None, "status": f"error: {e}"})
-
-        finally:
-            if tracker:
-                tracker.save()
-            await browser.close()
-
-    return results
+if __name__ == "__main__":
+    asyncio.run(run_scraper())
