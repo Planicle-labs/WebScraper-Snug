@@ -47,6 +47,12 @@ PRODUCT_PATH_PATTERNS = [
 ]
 PRODUCT_PATH_RE = re.compile("|".join(PRODUCT_PATH_PATTERNS), re.IGNORECASE)
 
+# Snitch product pages only: /men-t-shirts/<anything...>/buy
+SNITCH_PRODUCT_PATH_RE = re.compile(
+    r"^/men-t-shirts/(?:[^/]+/)+buy/?$",
+    re.IGNORECASE,
+)
+
 # URL patterns that are clearly NOT product pages — skip these
 IGNORE_PATH_RE = re.compile(
     r"/(cart|checkout|account|login|signup|register|wishlist|search|help|about|contact|faq|policy|blog|news|"
@@ -67,7 +73,7 @@ def save_products(products: list[str]):
     logger.info(f"Saved {len(products)} product URLs → {OUTPUT_FILE}")
 
 
-def normalise_url(href: str, base_domain: str) -> str | None:
+def normalise_url(href: str, base_url: str) -> str | None:
     """
     Turn href into an absolute, normalised URL.
     Returns None if it should be discarded.
@@ -75,11 +81,8 @@ def normalise_url(href: str, base_domain: str) -> str | None:
     if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
         return None
 
-    # Make absolute
-    if href.startswith("//"):
-        href = "https:" + href
-    elif href.startswith("/"):
-        href = base_domain + href
+    # Make absolute using the current page URL so we handle /foo, ./foo, ../foo, and query-only links.
+    href = urljoin(base_url, href)
 
     # Drop query string & fragment — we only want the canonical product URL
     try:
@@ -88,7 +91,7 @@ def normalise_url(href: str, base_domain: str) -> str | None:
         return None
 
     # Must be on the same host
-    base_host = urlparse(base_domain).netloc
+    base_host = urlparse(base_url).netloc
     if parsed.netloc and parsed.netloc != base_host:
         return None
 
@@ -99,6 +102,9 @@ def normalise_url(href: str, base_domain: str) -> str | None:
 def is_product_url(url: str) -> bool:
     """Heuristic: does this URL look like an individual product page?"""
     path = urlparse(url).path
+    host = urlparse(url).netloc.lower()
+    if host.endswith("snitch.com"):
+        return bool(SNITCH_PRODUCT_PATH_RE.search(path))
     if IGNORE_PATH_RE.search(path):
         return False
     return bool(PRODUCT_PATH_RE.search(path))
@@ -106,7 +112,7 @@ def is_product_url(url: str) -> bool:
 
 # ── Core scraping helpers ────────────────────────────────────────────────────
 
-async def wait_for_products(page, timeout: int = 3000) -> bool:
+async def wait_for_products(page, timeout: int = 8000) -> bool:
     """Wait until at least one product-looking element appears."""
     selectors = [
         "[class*='product']",
@@ -124,65 +130,99 @@ async def wait_for_products(page, timeout: int = 3000) -> bool:
     return False
 
 
-async def scroll_to_load(page, pause: float = 0.2):
+async def scroll_to_load(page, pause: float = 2.0):
     """
-    Scroll incrementally to trigger lazy-loaded products on infinite-scroll
-    or lazy-render pages.
+    Scroll in small steps to trigger lazy-loaded products on infinite-scroll
+    or lazy-render pages. Returns True if the page appears to have grown.
     """
-    prev_height = await page.evaluate("document.body.scrollHeight")
-    while True:
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(pause)
-        new_height = await page.evaluate("document.body.scrollHeight")
-        if new_height == prev_height:
-            break
-        prev_height = new_height
+    viewport_height = await page.evaluate("window.innerHeight")
+    step = max(300, int(viewport_height * 0.7))
+    before_height = await page.evaluate("document.body.scrollHeight")
+    before_links = await page.evaluate("document.querySelectorAll('a[href]').length")
+
+    await page.mouse.move(800, 450)
+    await page.mouse.wheel(0, step)
+    await asyncio.sleep(pause)
+
+    try:
+        await page.wait_for_function(
+            """([h, c]) => document.body.scrollHeight > h || document.querySelectorAll('a[href]').length > c""",
+            arg=[before_height, before_links],
+            timeout=int(pause * 1000) + 2000,
+        )
+    except Exception:
+        pass
+
+    after_height = await page.evaluate("document.body.scrollHeight")
+    after_links = await page.evaluate("document.querySelectorAll('a[href]').length")
+    return after_height > before_height or after_links > before_links
 
 
-async def collect_product_links(page, base_domain: str) -> list[str]:
+async def collect_product_links(page, base_url: str) -> list[str]:
     """
     Harvest all unique product URLs visible on the current page.
     Uses multiple selector strategies to be brand-agnostic.
     """
     seen: set[str] = set()
     found: list[str] = []
+    snitch_like = urlparse(base_url).netloc.endswith("snitch.com")
 
     # --- Strategy 1: all <a> tags ---
-    hrefs: list[str] = await page.evaluate(
-        "Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href'))"
-    )
+    if snitch_like:
+        hrefs: list[str] = await page.evaluate(
+            """Array.from(document.querySelectorAll(
+                'a[href*="/men-t-shirts/"], [data-href*="/men-t-shirts/"], [data-url*="/men-t-shirts/"], [data-link*="/men-t-shirts/"]'
+            )).map(el => el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-url') || el.getAttribute('data-link'))"""
+        )
+    else:
+        hrefs: list[str] = await page.evaluate(
+            "Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href'))"
+        )
 
     for href in hrefs:
-        url = normalise_url(href, base_domain)
+        url = normalise_url(href, base_url)
         if url and is_product_url(url) and url not in seen:
             seen.add(url)
             found.append(url)
 
-    # --- Strategy 2: product cards (anchors inside product containers) ---
-    card_selectors = [
-        "[class*='product'] a",
-        "[class*='ProductCard'] a",
-        "[class*='product-card'] a",
-        "[class*='item'] a",
-        "article a",
-        "li[class*='product'] a",
-    ]
-    for sel in card_selectors:
-        try:
-            hrefs2: list[str] = await page.evaluate(
-                f"Array.from(document.querySelectorAll('{sel}')).map(a => a.getAttribute('href'))"
-            )
-            for href in hrefs2:
-                url = normalise_url(href, base_domain)
-                if url and url not in seen:
-                    # For card links we accept any non-ignored URL since the
-                    # card context already implies it's a product
-                    path = urlparse(url).path
-                    if not IGNORE_PATH_RE.search(path):
-                        seen.add(url)
-                        found.append(url)
-        except Exception:
-            continue
+    # --- Strategy 2: some storefronts expose product URLs in data attributes ---
+    if snitch_like:
+        data_hrefs = await page.evaluate(
+            """Array.from(document.querySelectorAll('[data-href*="/men-t-shirts/"], [data-url*="/men-t-shirts/"], [data-link*="/men-t-shirts/"]'))
+                .map(el => el.getAttribute('data-href') || el.getAttribute('data-url') || el.getAttribute('data-link'))"""
+        )
+        for href in data_hrefs:
+            url = normalise_url(href, base_url)
+            if not url:
+                continue
+            if is_product_url(url) and url not in seen:
+                seen.add(url)
+                found.append(url)
+
+    # --- Strategy 3: generic card anchors for non-Snitch sites ---
+    if not snitch_like:
+        card_selectors = [
+            "[class*='product'] a",
+            "[class*='ProductCard'] a",
+            "[class*='product-card'] a",
+            "[class*='item'] a",
+            "article a",
+            "li[class*='product'] a",
+        ]
+        for sel in card_selectors:
+            try:
+                hrefs2: list[str] = await page.evaluate(
+                    f"Array.from(document.querySelectorAll('{sel}')).map(a => a.getAttribute('href'))"
+                )
+                for href in hrefs2:
+                    url = normalise_url(href, base_url)
+                    if url and url not in seen:
+                        path = urlparse(url).path
+                        if is_product_url(url) and not IGNORE_PATH_RE.search(path):
+                            seen.add(url)
+                            found.append(url)
+            except Exception:
+                continue
 
     return found
 
@@ -331,9 +371,10 @@ async def scrape_category(
     seen_products: set[str] = set()
     logger.info(f"Starting product discovery: {category_url}")
     logger.info(f"Max pages: {max_pages} | Base domain: {base_domain}")
+    snitch_like = parsed.netloc.lower().endswith("snitch.com")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(
             user_agent=random.choice(USER_AGENTS),
             viewport={"width": 1440, "height": 900},
@@ -349,21 +390,56 @@ async def scrape_category(
             tracker.attach_to_context(context)
 
         try:
-            await page.goto(category_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(category_url, wait_until="domcontentloaded", timeout=45000)
             try:
-                await page.wait_for_selector("[class*='product'], [class*='item'], article, ul", timeout=3000)
+                await page.wait_for_selector("[class*='product'], [class*='item'], article, ul", timeout=8000)
             except Exception:
                 pass
 
             current_url = category_url
             empty_count = 0
 
-            for page_num in range(1, max_pages + 1):
-                await asyncio.sleep(0.05)
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(0.05)
+            if snitch_like:
+                for page_num in range(1, max_pages * 20 + 1):
+                    await asyncio.sleep(1.0)
+                    products = await collect_product_links(page, page.url)
+                    new_count = 0
+                    for url in products:
+                        if url not in seen_products:
+                            seen_products.add(url)
+                            all_products.append(url)
+                            new_count += 1
 
-                products = await collect_product_links(page, base_domain)
+                    if new_count > 0:
+                        empty_count = 0
+                    else:
+                        empty_count += 1
+
+                    logger.info(f"[Scroll {page_num}] +{new_count} products (total: {len(all_products)})")
+
+                    if len(all_products) >= 1500:
+                        logger.info("Reached the expected Snitch product volume")
+                        break
+
+                    if empty_count >= 6:
+                        logger.info("No more products found")
+                        break
+
+                    progressed = await scroll_to_load(page, pause=1.4)
+                    if not progressed:
+                        if empty_count >= 3:
+                            logger.info("Scroll stalled")
+                            break
+                save_products(all_products)
+                logger.info(f"Discovery complete. Total product URLs: {len(all_products)}")
+                return all_products
+
+            for page_num in range(1, max_pages + 1):
+                await asyncio.sleep(4.0)
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(4.0)
+
+                products = await collect_product_links(page, page.url)
                 new_count = 0
                 for url in products:
                     if url not in seen_products:
@@ -388,7 +464,7 @@ async def scrape_category(
                 clicked = await click_next_button(page)
                 if clicked:
                     try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
                         current_url = page.url
                     except Exception:
                         break
@@ -396,7 +472,7 @@ async def scrape_category(
                     next_url = build_next_page_url(current_url, page_num + 1)
                     if next_url and next_url != current_url:
                         try:
-                            await page.goto(next_url, wait_until="domcontentloaded", timeout=20000)
+                            await page.goto(next_url, wait_until="domcontentloaded", timeout=30000)
                             current_url = next_url
                         except Exception:
                             break
