@@ -122,7 +122,7 @@ def _db_requests() -> int:
 def _thread_product_discovery(task_id: str, url: str, max_pages: int):
     logs = _task_logs[task_id]
     try:
-        from product_discovery.scraper import scrape_category
+        from Companies.Overlays.scraper import scrape_category
         logs.append(f"Starting Product Discovery for: {url}")
         logs.append(f"Max pages: {max_pages}")
         result = asyncio.run(scrape_category(url, max_pages))
@@ -141,7 +141,7 @@ def _thread_page_search(task_id: str, urls: list):
         from core.utils import read_json_file, get_output_file_path
         from page_search.run import load_brands, url_matches_brand
         from page_search.scrapers.html_scraper import scrape_html_size_chart
-        from page_search.scrapers.image_scraper import scrape_image_size_chart
+        from Companies.Overlays.image_scraper import scrape_image_size_chart
 
         brands = load_brands()
         brand_by_host = {

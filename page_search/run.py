@@ -20,7 +20,7 @@ from core.logger import logger
 from core.robots import check_robots
 from core.utils import read_json_file
 from page_search.scrapers.html_scraper import scrape_html_size_chart
-from page_search.scrapers.image_scraper import scrape_image_size_chart
+from Companies.Overlays.image_scraper import scrape_image_size_chart
 
 # ── Paths (resolved from this file's location so they work from any cwd) ────
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
