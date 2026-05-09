@@ -133,7 +133,7 @@ def _db_requests() -> int:
 def _thread_product_discovery(task_id: str, url: str, max_pages: int):
     logs = _task_logs[task_id]
     try:
-        from product_discovery.scraper import scrape_category
+        from Companies.Snitch.scraper import scrape_category
         logs.append(f"Starting Product Discovery for: {url}")
         logs.append(f"Max pages: {max_pages}")
         result = asyncio.run(scrape_category(url, max_pages))
