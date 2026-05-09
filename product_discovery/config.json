@@ -1,8 +1,20 @@
 [
   {
-    "brand_name": "Snitch",
-    "category": "men-t-shirts",
-    "category_url": "https://www.snitch.com/men-t-shirts/buy",
+    "brand_name": "Overlaysnow",
+    "category": "oversized-t-shirts",
+    "category_url": "https://overlaysnow.com/collections/oversized-t-shirts",
+    "max_pages": 20
+  },
+  {
+    "brand_name": "Overlaysnow",
+    "category": "polo-t-shirts",
+    "category_url": "https://overlaysnow.com/collections/polo-t-shirts",
+    "max_pages": 20
+  },
+  {
+    "brand_name": "Uniqlo",
+    "category": "t-shirts",
+    "category_url": "https://www.uniqlo.com/in/en/men/tops",
     "max_pages": 50
   }
 ]

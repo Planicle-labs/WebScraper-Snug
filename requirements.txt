@@ -2,3 +2,4 @@ streamlit
 psutil
 playwright
 playwright-stealth
+httpx

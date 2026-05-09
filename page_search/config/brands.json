@@ -1,5 +1,12 @@
 [
   {
+    "brand_name": "Overlaysnow",
+    "base_url": "https://overlaysnow.com",
+    "product_url": "https://overlaysnow.com/products/wave-hunter-oversized-t-shirt",
+    "chart_type": "image",
+    "region": "IN"
+  },
+  {
     "brand_name": "Uniqlo",
     "base_url": "https://www.uniqlo.com",
     "product_url": "https://www.uniqlo.com/in/en/products/E485454-000/00?colorDisplayCode=65&sizeDisplayCode=005",
