@@ -1,5 +1,32 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
-*.db
+*.py[cod]
+*$py.class
+*.so
+
+# Caches and environments
 .venv/
+.env
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Databases & local data
+*.db
+*.sqlite3
+
+# Temporary dumps & scratch scripts
+scratch_*.py
+*.tmp
+*.raw.html
+*.dump.json
+
+# IDEs & editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
