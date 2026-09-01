@@ -1,12 +1,22 @@
+"""Extract Nobero size charts from ?view=size-guide. Never writes null rows."""
+
+from __future__ import annotations
+
 import asyncio
 import json
+import logging
 import os
 import re
-import logging
-import httpx
-from typing import Dict, Any, List
+import sys
+from typing import Any, Dict, List
 
-# ── Logger Setup ─────────────────────────────────────────────────────────────
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from core.parser import infer_category, infer_fit, normalize_chart_rows, normalize_measurement_key
+from core.schema import product_error, product_success
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -17,177 +27,163 @@ logger = logging.getLogger("NoberoSizeChartExtractor")
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PRODUCTS_FILE = os.path.join(_THIS_DIR, "outputs", "nobero_tshirts.json")
 OUTPUT_FILE = os.path.join(_THIS_DIR, "outputs", "nobero_size_chart.json")
+BRAND = "Nobero"
 CONCURRENCY = 5
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 
-def normalize_key(raw_key: str) -> str:
-    """
-    Normalizes measurement header to clean snake_case ending with _cm.
-    """
-    key = raw_key.lower().strip()
-    key = re.sub(r"\s*\(in inch\)", "", key)
-    key = re.sub(r"\s*\(inch\)", "", key)
-    key = re.sub(r"\s*\(cm\)", "", key)
-    key = key.replace("front length", "length")
-    key = re.sub(r"[^a-z0-9_]+", "_", key).strip("_")
-    if not key.endswith("_cm"):
-        key = f"{key}_cm"
-    return key
+def _strip(html: str) -> str:
+    return re.sub(r"<[^>]+>", "", html).strip()
 
 
-async def fetch_nobero_size_chart(client: httpx.AsyncClient, url: str) -> Dict[str, Any]:
-    """
-    Fetches Nobero size chart HTML via ?view=size-guide with 429 retry and parses measurements into CM.
-    """
-    target_url = f"{url}?view=size-guide"
-    
-    max_retries = 5
-    for attempt in range(max_retries):
+def parse_size_guide_html(html: str) -> List[Dict[str, Any]]:
+    if "sizeChartTable" not in html:
+        return []
+    headers: List[str] = []
+    for th in re.findall(r"<th[^>]*>([\s\S]*?)</th>", html, re.I):
+        clean = _strip(th)
+        if clean:
+            headers.append(clean)
+    if not headers:
+        return []
+    size_idx = 0
+    for i, h in enumerate(headers):
+        if h.lower() in {"size", "brand size", "tag size"}:
+            size_idx = i
+            break
+    rows: List[Dict[str, Any]] = []
+    trs = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html, re.I)
+    for tr in trs[1:]:
+        tds = [_strip(td) for td in re.findall(r"<td[^>]*>([\s\S]*?)</td>", tr, re.I)]
+        tds = [td for td in tds if td]
+        if len(tds) < len(headers):
+            continue
+        size_val = tds[size_idx]
+        row: Dict[str, Any] = {"size": size_val}
+        for i, header in enumerate(headers):
+            if i == size_idx:
+                continue
+            try:
+                row[normalize_measurement_key(header)] = float(tds[i])
+            except (TypeError, ValueError):
+                continue
+        if len(row) > 1:
+            rows.append(row)
+    return normalize_chart_rows(rows)
+
+
+async def fetch_one(client: Any, url: str) -> Dict[str, Any]:
+    handle = url.split("/products/")[-1].split("?")[0]
+    target = f"{url}?view=size-guide"
+    last_err = "unknown"
+    for attempt in range(5):
         try:
-            resp = await client.get(target_url, headers=HEADERS, timeout=12.0)
+            resp = await client.get(target, headers=HEADERS, timeout=12.0)
             if resp.status_code == 429:
                 await asyncio.sleep(2.0 * (attempt + 1))
+                last_err = "HTTP_429"
                 continue
-
             if resp.status_code != 200:
-                return {
-                    "status": "error",
-                    "error_type": f"HTTP_{resp.status_code}",
-                    "message": f"HTTP status {resp.status_code} returned for URL: {target_url}",
-                    "product_url": url,
-                }
-
-            html = resp.text
-            if "sizeChartTable" not in html:
-                return {
-                    "status": "error",
-                    "error_type": "NO_SIZE_TABLE",
-                    "message": "sizeChartTable not found in view=size-guide response.",
-                    "product_url": url,
-                }
-
-            # Parse th headers
-            headers_list = []
-            th_matches = re.findall(r'<th[^>]*>([\s\S]*?)</th>', html, re.I)
-            for th in th_matches:
-                clean_th = re.sub(r'<[^>]+>', '', th).strip()
-                if clean_th:
-                    headers_list.append(clean_th)
-
-            if not headers_list or "Size" not in headers_list:
-                return {
-                    "status": "error",
-                    "error_type": "INVALID_HEADERS",
-                    "message": "Size header missing in sizeChartTable.",
-                    "product_url": url,
-                }
-
-            size_idx = headers_list.index("Size")
-            measurement_cols = [
-                (i, normalize_key(h))
-                for i, h in enumerate(headers_list)
-                if i != size_idx
-            ]
-
-            tr_matches = re.findall(r'<tr[^>]*>([\s\S]*?)</tr>', html, re.I)
-            parsed_sizes = []
-
-            for tr in tr_matches[1:]: # skip header row
-                td_matches = re.findall(r'<td[^>]*>([\s\S]*?)</td>', tr, re.I)
-                clean_tds = [re.sub(r'<[^>]+>', '', td).strip() for td in td_matches if re.sub(r'<[^>]+>', '', td).strip()]
-                
-                if len(clean_tds) >= len(headers_list):
-                    size_val = clean_tds[size_idx].upper()
-                    row_dict = {"size": size_val}
-
-                    for col_idx, norm_k in measurement_cols:
-                        val_str = clean_tds[col_idx]
-                        try:
-                            val_float = float(val_str)
-                            row_dict[norm_k] = round(val_float * 2.54, 1)
-                        except (ValueError, TypeError):
-                            continue
-                    
-                    if len(row_dict) > 1:
-                        parsed_sizes.append(row_dict)
-
-            if not parsed_sizes:
-                return {
-                    "status": "error",
-                    "error_type": "NO_PARSED_SIZES",
-                    "message": "Could not parse size rows from sizeChartTable.",
-                    "product_url": url,
-                }
-
-            handle = url.split("/products/")[-1].split("?")[0]
-            return {
-                "status": "success",
-                "unit": "cm",
-                "handle": handle,
-                "size_chart": parsed_sizes,
-                "product_url": url,
-            }
-
-        except Exception as e:
-            if attempt == max_retries - 1:
-                return {
-                    "status": "error",
-                    "error_type": "EXCEPTION",
-                    "message": str(e),
-                    "product_url": url,
-                }
+                return product_error(
+                    brand=BRAND,
+                    product_url=url,
+                    handle=handle,
+                    error_type=f"HTTP_{resp.status_code}",
+                    message=f"HTTP {resp.status_code} for {target}",
+                )
+            rows = parse_size_guide_html(resp.text)
+            if not rows:
+                return product_error(
+                    brand=BRAND,
+                    product_url=url,
+                    handle=handle,
+                    error_type="NO_PARSED_SIZES",
+                    message="Could not parse sizeChartTable",
+                )
+            category = infer_category(handle, url)
+            fit = infer_fit(handle, url, default="regular")
+            return product_success(
+                source="live",
+                brand=BRAND,
+                category=category,
+                fit=fit,
+                product_url=url,
+                handle=handle,
+                size_chart=rows,
+            )
+        except Exception as exc:
+            last_err = str(exc)
+            if attempt == 4:
+                return product_error(
+                    brand=BRAND,
+                    product_url=url,
+                    handle=handle,
+                    error_type="EXCEPTION",
+                    message=last_err,
+                )
             await asyncio.sleep(1.0)
+    return product_error(
+        brand=BRAND,
+        product_url=url,
+        handle=handle,
+        error_type="MAX_RETRIES_EXCEEDED",
+        message=last_err,
+    )
 
-    return {
-        "status": "error",
-        "error_type": "MAX_RETRIES_EXCEEDED",
-        "message": "Failed after max retries.",
-        "product_url": url,
-    }
 
-
-async def main():
-    if not os.path.exists(PRODUCTS_FILE):
-        logger.error(f"Products file not found: {PRODUCTS_FILE}")
+async def main_async() -> None:
+    try:
+        import httpx
+    except ImportError:
+        logger.error("httpx is required: uv pip install httpx")
         return
-
+    if not os.path.exists(PRODUCTS_FILE):
+        logger.error("Products file not found: %s", PRODUCTS_FILE)
+        return
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
         products = json.load(f)
-
-    logger.info(f"Extracting size charts for {len(products)} Nobero products with retry logic...")
-
-    semaphore = asyncio.Semaphore(CONCURRENCY)
-    results = []
+    logger.info("Extracting Nobero size charts for %s products...", len(products))
+    sem = asyncio.Semaphore(CONCURRENCY)
     completed = 0
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        async def worker(url: str):
+        async def worker(url: str) -> Dict[str, Any]:
             nonlocal completed
-            async with semaphore:
-                res = await fetch_nobero_size_chart(client, url)
+            async with sem:
+                res = await fetch_one(client, url)
                 completed += 1
                 if completed % 50 == 0 or completed == len(products):
-                    logger.info(f"Nobero Progress: {completed}/{len(products)} completed")
-                return res if res else {"status": "error", "message": "None returned", "product_url": url}
+                    logger.info("Nobero %s/%s", completed, len(products))
+                return res if isinstance(res, dict) else product_error(
+                    brand=BRAND,
+                    product_url=url,
+                    handle=url.split("/products/")[-1].split("?")[0],
+                    error_type="NULL_RECORD",
+                    message="worker returned empty",
+                )
 
-        results = await asyncio.gather(*[worker(url) for url in products])
+        results = await asyncio.gather(*[worker(u) for u in products])
+
+    results = [r if isinstance(r, dict) else product_error(
+        brand=BRAND, product_url="", error_type="NULL_RECORD", message="null row"
+    ) for r in results]
 
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as out:
         json.dump(results, out, indent=2, ensure_ascii=False)
+    ok = sum(1 for r in results if r.get("status") == "success")
+    logger.info("Saved %s Nobero charts (%s success) → %s", len(results), ok, OUTPUT_FILE)
 
-    successful = [r for r in results if isinstance(r, dict) and r.get("status") == "success"]
-    logger.info(f"Saved {len(results)} Nobero size chart results ({len(successful)} successful) → {OUTPUT_FILE}")
+
+def main() -> None:
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

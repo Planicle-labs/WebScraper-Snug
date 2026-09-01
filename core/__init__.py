@@ -1,1 +1,1 @@
-# core — shared utilities (logger, robots checker)
+# core — shared utilities (logger, robots, Snug schema/parser/validator)

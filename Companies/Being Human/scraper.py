@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger("beinghumanscraper")
 
 # ── Config ───────────────────────────────────────────────────────────────────
-SITE_BASE    = "https://www.beinghumanclothing.com/"
+SITE_BASE    = "https://www.beinghumanclothing.com"
 API_BASE     = f"{SITE_BASE}/collections/men-t-shirt/products.json"
 LIMIT        = 250         # Shopify's hard max per page
 CONCURRENCY  = 3
