@@ -49,8 +49,6 @@ def validate_product(record: ProductChart) -> Tuple[str, str, List[str]]:
         return "FAIL", "low", ["empty size chart"]
 
     has_chest = 0
-    has_shoulder = 0
-    has_published_body = 0
     for row in chart:
         size = row.get("size")
         if size not in SIZE_RANK:
@@ -64,12 +62,9 @@ def validate_product(record: ProductChart) -> Tuple[str, str, List[str]]:
             reasons.append(f"{size} chest {chest} outside {CHEST_MIN_CM}-{CHEST_MAX_CM}")
         shoulder = row.get("garment_shoulder_cm")
         if isinstance(shoulder, (int, float)):
-            has_shoulder += 1
             if shoulder < SHOULDER_MIN_CM or shoulder > SHOULDER_MAX_CM:
                 reasons.append(f"{size} shoulder {shoulder} outside bounds")
-        if isinstance(row.get("body_chest_cm"), (int, float)):
-            has_published_body += 1
-        if row.get("body_hip_min") or row.get("body_inseam"):
+        if any(row.get(k) for k in ("body_hip_min", "body_hip_max", "body_inseam", "garment_inseam_cm", "inseam", "inseam_cm", "hip", "hip_cm")):
             reasons.append("bottom-wear fields on a top")
 
     if has_chest == 0:
@@ -83,45 +78,27 @@ def validate_product(record: ProductChart) -> Tuple[str, str, List[str]]:
     if step > 10:
         reasons.append(f"chest jump {step:.1f}cm between adjacent sizes")
 
-    missing_shoulder = has_shoulder == 0
-    if missing_shoulder:
-        reasons.append("missing shoulder")
-
-    derived_body = has_published_body == 0
-    clustered = source == "clustered"
-    official = source in {"official_guide", "brand_api"}
-    live = source == "live"
-
     fail_markers = [r for r in reasons if "outside" in r or "bottom-wear" in r]
     if fail_markers:
         return "FAIL", "low", reasons
 
-    if clustered or (missing_shoulder and step > 10):
-        confidence = "low"
-        verdict = "WARN"
-    elif missing_shoulder or derived_body or official or step > 10:
-        confidence = "medium"
-        verdict = "WARN" if (missing_shoulder or step > 10) else "PASS"
-    elif live and has_shoulder and (has_published_body or not derived_body):
-        confidence = "high"
-        verdict = "PASS"
-    else:
-        confidence = "medium"
-        verdict = "PASS"
-
-    # Live/API with derived ease still medium (plan: published body = high).
-    if has_published_body and live and has_shoulder and step <= 10:
-        confidence = "high"
-        verdict = "PASS"
-    elif live and has_shoulder and step <= 10:
-        confidence = "medium"
-        verdict = "PASS"
-
-    if source == "brand_api" and has_shoulder and step <= 10:
-        confidence = "medium"
-        verdict = "PASS" if not reasons else "WARN"
-
-    if not reasons:
-        if confidence == "high":
+    clustered = source == "clustered"
+    if clustered:
+        if reasons:
+            confidence = "low"
+            verdict = "WARN"
+        else:
+            confidence = "medium"
             verdict = "PASS"
+    else:
+        # Authentic brand data (live, brand_api, official_guide).
+        # Garment measurements are authentic; missing shoulder width or body metrics
+        # are normal and not penalized.
+        if reasons:
+            confidence = "medium"
+            verdict = "WARN"
+        else:
+            confidence = "high"
+            verdict = "PASS"
+
     return verdict, confidence, reasons

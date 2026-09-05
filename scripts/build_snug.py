@@ -12,7 +12,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from core.body import attach_body
 from core.collapse import collapse_products
 from core.parser import parse_product
 from core.schema import ProductChart
@@ -56,7 +55,6 @@ def process_brand(brand: str, path: str) -> List[ProductChart]:
             )
             continue
         if parsed.get("status") == "success":
-            parsed = attach_body(parsed)
             verdict, confidence, reasons = validate_product(parsed)
             parsed["confidence"] = confidence  # type: ignore[typeddict-unknown-key]
             parsed["verdict"] = verdict  # type: ignore[typeddict-unknown-key]

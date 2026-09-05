@@ -157,27 +157,30 @@ def collapse_products(
                     "fit": fit_name,
                     "size_label": row["size"],
                     "region": "IN",
-                    "body_chest_min": row.get("body_chest_min"),
-                    "body_chest_max": row.get("body_chest_max"),
-                    "body_shoulder": row.get("body_shoulder"),
-                    "body_waist_min": row.get("body_waist_min"),
-                    "body_waist_max": row.get("body_waist_max"),
-                    "body_hip_min": row.get("body_hip_min"),
-                    "body_hip_max": row.get("body_hip_max"),
-                    "body_inseam": row.get("body_inseam"),
                     "garment_chest_cm": row.get("garment_chest_cm"),
                     "garment_shoulder_cm": row.get("garment_shoulder_cm"),
                     "garment_length_cm": row.get("garment_length_cm"),
                     "garment_sleeve_cm": row.get("garment_sleeve_cm"),
-                    "confidence": worst_conf,
-                    "last_verified": verified,
-                    "product_count": len(members),
-                    "source": source,
-                    "chart_title": title,
                 }
-                # Attach any other brand-specific measurements (e.g. neck, bicep, etc.)
+                to_fit = row.get("to_fit_chest_cm") if row.get("to_fit_chest_cm") is not None else row.get("body_chest_cm")
+                if to_fit is not None:
+                    snug_row["to_fit_chest_cm"] = to_fit
+
+                snug_row.update(
+                    {
+                        "confidence": worst_conf,
+                        "last_verified": verified,
+                        "product_count": len(members),
+                        "source": source,
+                        "chart_title": title,
+                    }
+                )
+                # Attach any other authentic brand-specific measurements (e.g. neck, bicep, etc.)
+                # Never insert or re-attach fabricated body_* metrics
                 for k, v in row.items():
                     if k not in snug_row and k != "size":
+                        if k.startswith("body_"):
+                            continue
                         snug_row[k] = v
                 snug.append(snug_row)
 

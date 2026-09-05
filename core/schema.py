@@ -66,10 +66,8 @@ class SizeRow(TypedDict, total=False):
     garment_shoulder_cm: float
     garment_length_cm: float
     garment_sleeve_cm: float
+    to_fit_chest_cm: float
     body_chest_cm: float
-    body_chest_min: float
-    body_chest_max: float
-    body_shoulder: float
 
 
 class ProductChart(TypedDict, total=False):
@@ -97,16 +95,12 @@ class SnugRow(TypedDict, total=False):
     fit: str
     size_label: str
     region: str
-    body_chest_min: Optional[float]
-    body_chest_max: Optional[float]
-    body_shoulder: Optional[float]
-    body_waist_min: None
-    body_waist_max: None
-    body_hip_min: None
-    body_hip_max: None
-    body_inseam: None
     garment_chest_cm: Optional[float]
     garment_shoulder_cm: Optional[float]
+    garment_length_cm: Optional[float]
+    garment_sleeve_cm: Optional[float]
+    to_fit_chest_cm: Optional[float]
+    body_chest_cm: Optional[float]
     confidence: str
     last_verified: str
     product_count: int

@@ -19,7 +19,7 @@ from core.schema import (
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
-# Raw header / key -> canonical garment_* or body_* field.
+# Raw header / key -> canonical garment_* or to_fit_* field.
 _KEY_MAP = {
     "chest": "garment_chest_cm",
     "chest_cm": "garment_chest_cm",
@@ -27,10 +27,10 @@ _KEY_MAP = {
     "garment_chest_cm": "garment_chest_cm",
     "shirt_size": "garment_chest_cm",
     "shirt_size_cm": "garment_chest_cm",
-    "to_fit_chest": "body_chest_cm",
-    "to_fit_chest_cm": "body_chest_cm",
-    "body_chest": "body_chest_cm",
-    "body_chest_cm": "body_chest_cm",
+    "to_fit_chest": "to_fit_chest_cm",
+    "to_fit_chest_cm": "to_fit_chest_cm",
+    "body_chest": "to_fit_chest_cm",
+    "body_chest_cm": "to_fit_chest_cm",
     "shoulder": "garment_shoulder_cm",
     "shoulder_cm": "garment_shoulder_cm",
     "across_shoulder": "garment_shoulder_cm",

@@ -1,23 +1,38 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
 *$py.class
 *.so
 
-# Caches and environments
+# Caches and virtual environments
 .venv/
-.env
+venv/
+env/
+ENV/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
 
-# Databases & local data
+# Environment secrets
+.env
+.env.*
+.env.local
+.env.production
+.env.development
+!.env.example
+
+# Databases & local metrics
 *.db
 *.sqlite3
 
-# Temporary dumps & scratch scripts
+# Temporary dumps, logs & scratch scripts
+*.txt
+!requirements*.txt
 scratch_*.py
 *.tmp
+*.log
 *.raw.html
 *.dump.json
 .playwright-cli/
@@ -28,6 +43,6 @@ scratch_*.py
 *.swp
 *.swo
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db

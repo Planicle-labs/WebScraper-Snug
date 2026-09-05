@@ -2,4 +2,6 @@ streamlit
 psutil
 playwright
 playwright-stealth
-httpx
+httpx
+asyncpg
+python-dotenv
